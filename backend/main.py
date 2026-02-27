@@ -24,7 +24,8 @@ from backend.database.models import (
 )
 from backend.models.schemas import (
     VIPProfile, Escort, Buggy, Flight, 
-    LoungeReservation, ServiceLog, EventType, VIPState
+    LoungeReservation, ServiceLog, EventType, VIPState,
+    CameraRegisterRequest, CameraDetectRequest
 )
 from backend.orchestrator.event_bus import EventBus
 from backend.orchestrator.master_orchestrator import MasterOrchestrator
@@ -48,6 +49,7 @@ event_bus: EventBus = None
 orchestrator: MasterOrchestrator = None
 websocket_manager: WebSocketManager = None
 agents = {}
+active_demo_workflows = set()  # Track VIPs with active demo workflows
 
 
 @asynccontextmanager
@@ -638,6 +640,220 @@ async def reset_demo(db: Session = Depends(get_db)):
         }
 
 
+# ============================================================================
+# Face Recognition / Camera Endpoints
+# ============================================================================
+
+@app.post("/api/camera/register")
+async def register_face(
+    request: CameraRegisterRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Register a new VIP face from camera capture.
+    
+    Args:
+        request: Camera registration request with name, flight_id, and image_data
+    
+    Returns:
+        Registration status and VIP ID
+    """
+    name = request.name
+    flight_id = request.flight_id
+    image_data = request.image_data
+    import base64
+    import cv2
+    import numpy as np
+    from deepface import DeepFace
+    import pickle
+    
+    try:
+        # Decode base64 image
+        image_bytes = base64.b64decode(image_data.split(',')[1] if ',' in image_data else image_data)
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return {"status": "error", "message": "Invalid image data"}
+        
+        # Extract face embedding using DeepFace
+        try:
+            embedding_objs = DeepFace.represent(
+                img_path=img,
+                model_name="VGG-Face",
+                enforce_detection=False  # More lenient - works even if face isn't perfectly detected
+            )
+            
+            if not embedding_objs:
+                return {"status": "error", "message": "No face detected in image"}
+            
+            embedding = np.array(embedding_objs[0]["embedding"])
+            
+        except Exception as e:
+            logger.error(f"Face detection failed: {e}")
+            return {"status": "error", "message": f"Face detection failed: {str(e)}"}
+        
+        # Create VIP profile
+        vip_id = str(uuid4())
+        vip = VIPProfileDB(
+            id=vip_id,
+            name=name,
+            face_embedding=pickle.dumps(embedding),
+            flight_id=flight_id,
+            current_state="prepared",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
+        )
+        
+        db.add(vip)
+        db.commit()
+        
+        logger.info(f"Registered VIP {name} (ID: {vip_id}) with face embedding")
+        
+        return {
+            "status": "success",
+            "vip_id": vip_id,
+            "name": name,
+            "message": f"VIP {name} registered successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error registering face: {e}", exc_info=True)
+        db.rollback()
+        return {"status": "error", "message": f"Registration failed: {str(e)}"}
+
+
+@app.post("/api/camera/detect")
+async def detect_face(
+    request: CameraDetectRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Detect and recognize VIP face from camera capture.
+    
+    Args:
+        request: Camera detection request with image_data
+    
+    Returns:
+        Detection result with VIP information if recognized
+    """
+    image_data = request.image_data
+    import base64
+    import cv2
+    import numpy as np
+    from deepface import DeepFace
+    import pickle
+    from scipy.spatial.distance import cosine
+    
+    try:
+        # Decode base64 image
+        image_bytes = base64.b64decode(image_data.split(',')[1] if ',' in image_data else image_data)
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return {"status": "error", "message": "Invalid image data"}
+        
+        # Extract face embedding
+        try:
+            embedding_objs = DeepFace.represent(
+                img_path=img,
+                model_name="VGG-Face",
+                enforce_detection=False  # More lenient - works even if face isn't perfectly detected
+            )
+            
+            if not embedding_objs:
+                return {"status": "no_face", "message": "No face detected"}
+            
+            detected_embedding = np.array(embedding_objs[0]["embedding"])
+            
+        except Exception as e:
+            logger.error(f"Face detection failed: {e}")
+            return {"status": "no_face", "message": "No face detected"}
+        
+        # Get all VIP profiles
+        vips = db.query(VIPProfileDB).all()
+        
+        if not vips:
+            return {"status": "no_match", "message": "No VIPs registered"}
+        
+        # Find best match
+        best_match_vip = None
+        best_confidence = 0.0
+        threshold = 0.85
+        
+        for vip in vips:
+            stored_embedding = pickle.loads(vip.face_embedding)
+            
+            # Calculate cosine similarity
+            similarity = 1 - cosine(detected_embedding, stored_embedding)
+            
+            if similarity > best_confidence:
+                best_confidence = similarity
+                best_match_vip = vip
+        
+        # Check if confidence exceeds threshold
+        if best_confidence >= threshold:
+            logger.info(f"VIP detected: {best_match_vip.name} with confidence {best_confidence:.2f}")
+            logger.info(f"VIP current state: {best_match_vip.current_state}")
+            
+            # Trigger VIP detection workflow if not already in progress
+            if best_match_vip.current_state == "prepared" and best_match_vip.id not in active_demo_workflows:
+                # Use the identity agent to trigger detection
+                from backend.models.schemas import Event
+                
+                vip_detected_event = Event(
+                    event_type=EventType.VIP_DETECTED,
+                    payload={
+                        "vip_id": best_match_vip.id,
+                        "confidence": best_confidence,
+                        "detection_location": "Camera Feed",
+                        "detection_method": "Real-time Face Recognition"
+                    },
+                    source_agent="identity_agent",
+                    vip_id=best_match_vip.id
+                )
+                
+                await event_bus.publish(vip_detected_event)
+                logger.info(f"Published VIP_DETECTED event for {best_match_vip.name}")
+                
+                # Mark workflow as active and start the demo workflow
+                active_demo_workflows.add(best_match_vip.id)
+                import asyncio
+                asyncio.create_task(_run_demo_workflow(best_match_vip.id, best_match_vip.flight_id))
+                logger.info(f"Started demo workflow for {best_match_vip.name}")
+                
+                # Refresh VIP state from database after event processing
+                db.refresh(best_match_vip)
+                logger.info(f"VIP state after event: {best_match_vip.current_state}")
+            elif best_match_vip.id in active_demo_workflows:
+                logger.info(f"VIP {best_match_vip.name} already has an active workflow")
+            else:
+                logger.info(f"VIP {best_match_vip.name} already in workflow (state: {best_match_vip.current_state})")
+            
+            return {
+                "status": "match",
+                "vip": {
+                    "id": best_match_vip.id,
+                    "name": best_match_vip.name,
+                    "flight_id": best_match_vip.flight_id,
+                    "current_state": best_match_vip.current_state
+                },
+                "confidence": round(best_confidence * 100, 1),
+                "message": f"VIP {best_match_vip.name} recognized"
+            }
+        else:
+            return {
+                "status": "no_match",
+                "confidence": round(best_confidence * 100, 1),
+                "message": "No matching VIP found"
+            }
+        
+    except Exception as e:
+        logger.error(f"Error detecting face: {e}", exc_info=True)
+        return {"status": "error", "message": f"Detection failed: {str(e)}"}
+
+
 async def _run_demo_workflow(vip_id: str, flight_id: str):
     """
     Run the demo workflow - auto-progress through all states.
@@ -825,8 +1041,15 @@ async def _run_demo_workflow(vip_id: str, flight_id: str):
         
         logger.info(f"Demo workflow completed successfully for VIP {vip_id}")
         
+        # Remove from active workflows
+        active_demo_workflows.discard(vip_id)
+        logger.info(f"Demo: Removed {vip_id} from active workflows")
+        
     except Exception as e:
         logger.error(f"Error in demo workflow for VIP {vip_id}: {e}", exc_info=True)
+        # Remove from active workflows even on error
+        active_demo_workflows.discard(vip_id)
+        logger.info(f"Demo: Removed {vip_id} from active workflows (error cleanup)")
 
 
 # ============================================================================

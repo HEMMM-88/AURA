@@ -278,3 +278,19 @@ class Event(BaseModel):
         return v.strip()
     
     model_config = ConfigDict(use_enum_values=True)
+
+
+# ============================================================================
+# Camera / Face Recognition Request Models
+# ============================================================================
+
+class CameraRegisterRequest(BaseModel):
+    """Request model for face registration from camera."""
+    name: str = Field(..., min_length=1, description="VIP name")
+    flight_id: str = Field(..., min_length=1, description="Flight ID")
+    image_data: str = Field(..., description="Base64 encoded image from camera")
+
+
+class CameraDetectRequest(BaseModel):
+    """Request model for face detection from camera."""
+    image_data: str = Field(..., description="Base64 encoded image from camera")

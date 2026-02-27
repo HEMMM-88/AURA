@@ -2,6 +2,8 @@ import { Routes, Route, Link, useLocation } from 'react-router-dom'
 import { Dashboard } from './pages/Dashboard'
 import { VIPDetails } from './pages/VIPDetails'
 import { EscortManagement } from './pages/EscortManagement'
+import { FaceRegistration } from './pages/FaceRegistration'
+import { FaceDetection } from './pages/FaceDetection'
 
 function App() {
   const location = useLocation();
@@ -32,6 +34,26 @@ function App() {
               Dashboard
             </Link>
             <Link
+              to="/register"
+              className={`px-4 py-2 rounded-lg text-sm font-mono transition-colors ${
+                location.pathname === '/register'
+                  ? 'bg-status-active text-control-bg'
+                  : 'text-control-text-dim hover:text-control-text hover:bg-control-bg'
+              }`}
+            >
+              Register VIP
+            </Link>
+            <Link
+              to="/detect"
+              className={`px-4 py-2 rounded-lg text-sm font-mono transition-colors ${
+                location.pathname === '/detect'
+                  ? 'bg-status-active text-control-bg'
+                  : 'text-control-text-dim hover:text-control-text hover:bg-control-bg'
+              }`}
+            >
+              Detect VIP
+            </Link>
+            <Link
               to="/escorts"
               className={`px-4 py-2 rounded-lg text-sm font-mono transition-colors ${
                 location.pathname === '/escorts'
@@ -49,6 +71,8 @@ function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/vip/:vip_id" element={<VIPDetails />} />
+          <Route path="/register" element={<FaceRegistration />} />
+          <Route path="/detect" element={<FaceDetection />} />
           <Route path="/escorts" element={<EscortManagement />} />
         </Routes>
       </main>
