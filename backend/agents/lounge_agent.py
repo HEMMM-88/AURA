@@ -61,7 +61,10 @@ class LoungeAgent:
 
     async def handle_vip_detected(self, event: Event) -> None:
         """
-        Handle VIP_DETECTED event by creating a lounge reservation.
+        Handle VIP_DETECTED event.
+        
+        NOTE: Lounge reservations are created when VIP reaches SECURITY_CLEARED state,
+        not at detection time. This handler is kept for logging purposes only.
         
         Args:
             event: The VIP_DETECTED event
@@ -74,10 +77,8 @@ class LoungeAgent:
             logger.error("VIP_DETECTED event missing vip_id")
             return
         
-        logger.info(f"Handling VIP detected for VIP ID: {vip_id}")
-        
-        # Create lounge reservation
-        await self.create_reservation(vip_id)
+        logger.info(f"VIP detected: {vip_id} - Lounge reservation will be created at SECURITY_CLEARED state")
+        # Reservation creation happens in handle_state_changed when VIP reaches SECURITY_CLEARED
 
     async def handle_flight_delay(self, event: Event) -> None:
         """
@@ -100,7 +101,7 @@ class LoungeAgent:
 
     async def handle_state_changed(self, event: Event) -> None:
         """
-        Handle STATE_CHANGED event to grant lounge access or release reservations.
+        Handle STATE_CHANGED event to create reservations, grant lounge access, or release reservations.
         
         Args:
             event: The STATE_CHANGED event
@@ -114,8 +115,13 @@ class LoungeAgent:
             logger.error("STATE_CHANGED event missing vip_id or new_state")
             return
         
+        # Create lounge reservation when VIP reaches SECURITY_CLEARED state
+        if new_state == VIPState.SECURITY_CLEARED.value:
+            logger.info(f"VIP {vip_id} cleared security, creating lounge reservation")
+            await self.create_reservation(vip_id)
+        
         # Grant lounge access when VIP reaches LOUNGE_ENTRY state
-        if new_state == VIPState.LOUNGE_ENTRY.value:
+        elif new_state == VIPState.LOUNGE_ENTRY.value:
             logger.info(f"VIP {vip_id} reached LOUNGE_ENTRY state, granting access")
             await self.grant_access(vip_id)
         

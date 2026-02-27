@@ -780,7 +780,7 @@ async def detect_face(
         # Find best match
         best_match_vip = None
         best_confidence = 0.0
-        threshold = 0.85
+        threshold = 0.60  # Lowered from 0.85 to 0.60 for better matching
         
         for vip in vips:
             stored_embedding = pickle.loads(vip.face_embedding)
@@ -788,17 +788,30 @@ async def detect_face(
             # Calculate cosine similarity
             similarity = 1 - cosine(detected_embedding, stored_embedding)
             
+            logger.info(f"Comparing with VIP {vip.name}: similarity = {similarity:.4f}")
+            
             if similarity > best_confidence:
                 best_confidence = similarity
                 best_match_vip = vip
+        
+        logger.info(f"Best match: {best_match_vip.name if best_match_vip else 'None'} with confidence {best_confidence:.4f} (threshold: {threshold})")
         
         # Check if confidence exceeds threshold
         if best_confidence >= threshold:
             logger.info(f"VIP detected: {best_match_vip.name} with confidence {best_confidence:.2f}")
             logger.info(f"VIP current state: {best_match_vip.current_state}")
+            logger.info(f"Active workflows: {active_demo_workflows}")
+            logger.info(f"VIP ID in active workflows: {best_match_vip.id in active_demo_workflows}")
             
             # Trigger VIP detection workflow if not already in progress
+            # Check BOTH state and active workflows to prevent duplicates
             if best_match_vip.current_state == "prepared" and best_match_vip.id not in active_demo_workflows:
+                logger.info(f"TRIGGERING NEW WORKFLOW for {best_match_vip.name}")
+                
+                # Mark workflow as active FIRST to prevent race conditions
+                active_demo_workflows.add(best_match_vip.id)
+                logger.info(f"Added {best_match_vip.id} to active workflows. Current set: {active_demo_workflows}")
+                
                 # Use the identity agent to trigger detection
                 from backend.models.schemas import Event
                 
@@ -817,8 +830,7 @@ async def detect_face(
                 await event_bus.publish(vip_detected_event)
                 logger.info(f"Published VIP_DETECTED event for {best_match_vip.name}")
                 
-                # Mark workflow as active and start the demo workflow
-                active_demo_workflows.add(best_match_vip.id)
+                # Start the demo workflow
                 import asyncio
                 asyncio.create_task(_run_demo_workflow(best_match_vip.id, best_match_vip.flight_id))
                 logger.info(f"Started demo workflow for {best_match_vip.name}")
