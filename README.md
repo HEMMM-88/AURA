@@ -218,6 +218,10 @@ All 26 required tasks completed. System is fully functional with:
 - Node.js 18+
 - PostgreSQL 14+ (or SQLite for development)
 
+## Author
+
+Developed by [HEMMM-08](https://github.com/HEMMM-08)
+
 ## License
 
 Proprietary - Airport VIP Services
